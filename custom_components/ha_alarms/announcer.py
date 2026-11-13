@@ -29,6 +29,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
+from . import i18n
 from .const import (
     ATTR_LABEL,
     ATTR_SOUND,
@@ -65,25 +66,34 @@ _POLL_INTERVAL = 0.5
 # Message builders
 # ---------------------------------------------------------------------------
 
-def _build_initial_message(item: dict[str, Any]) -> str:
-    """Build the first spoken announcement for an alarm or reminder."""
+def _build_initial_message(item: dict[str, Any], lang: str | None = None) -> str:
+    """Build the first spoken announcement for an alarm or reminder.
+
+    *lang* defaults to the language stored on the item when it was scheduled
+    (the Assist pipeline language), falling back to English.
+    """
+    lang = i18n.normalize_lang(lang or item.get("language"))
     item_type = item.get("type", ITEM_TYPE_ALARM)
     label = (item.get(ATTR_LABEL) or "").strip()
+    # The default label ("Alarm"/"Wecker") would just repeat the noun.
+    if i18n.is_default_label(label, item_type):
+        label = ""
 
     if item_type == ITEM_TYPE_REMINDER:
-        return f"Reminder: {label}." if label else "Reminder."
+        if label:
+            return i18n.t(lang, "ring_reminder", label=label)
+        return i18n.t(lang, "ring_reminder_nolabel")
 
     scheduled_at = item.get("scheduled_at")
     if scheduled_at is not None:
-        try:
-            time_str = scheduled_at.strftime("%-I:%M %p").lstrip("0") or scheduled_at.strftime("%I:%M %p")
-        except ValueError:
-            time_str = scheduled_at.strftime("%I:%M %p").lstrip("0")
+        time_str = i18n.clock(scheduled_at, lang)
         if label:
-            return f"Alarm: {label}. It's {time_str}."
-        return f"Alarm. It's {time_str}."
+            return i18n.t(lang, "ring_alarm_time", label=label, time=time_str)
+        return i18n.t(lang, "ring_alarm_time_nolabel", time=time_str)
 
-    return f"Alarm: {label}." if label else "Alarm."
+    if label:
+        return i18n.t(lang, "ring_alarm", label=label)
+    return i18n.t(lang, "ring_alarm_nolabel")
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +192,9 @@ class Announcer:
 
         try:
             # --- Initial TTS announcement ---------------------------------
-            initial_msg = _build_initial_message(item)
+            initial_msg = _build_initial_message(
+                item, item.get("language") or hass.config.language
+            )
             _LOGGER.debug("ha_alarms: ringing %s — %r", satellite_entity_id, initial_msg)
             await _announce(hass, satellite_entity_id, initial_msg)
 

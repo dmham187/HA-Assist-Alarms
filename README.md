@@ -59,7 +59,7 @@ The integration automatically discovers the correct media player for each satell
 ### Manual
 
 1. Copy the `custom_components/ha_alarms/` directory into your HA `config/custom_components/` directory
-2. Copy `config/custom_sentences/en/ha_alarms.yaml` into your HA `config/custom_sentences/en/` directory (create the directory if it doesn't exist)
+2. Copy the sentence file(s) for your language(s) — `config/custom_sentences/en/ha_alarms.yaml` and/or `config/custom_sentences/de/ha_alarms.yaml` — into the matching `config/custom_sentences/<lang>/` directory of your HA config (create the directory if it doesn't exist). HACS only installs `custom_components/`, so do this step after a HACS install too.
 3. Restart Home Assistant
 
 ---
@@ -109,6 +109,47 @@ The `DEFAULT_ALARM_SOUND` constant is used for any satellite not in `DEVICE_CONF
 Any pipeline with a working Conversation agent will work — including Claude, Gemini, or the built-in Home Assistant agent. HA runs intent and sentence matching *before* the conversation agent, so alarm and reminder commands are intercepted and handled by this integration regardless of what conversation agent is configured. Unrecognised speech falls through to the conversation agent as normal.
 
 The only hard requirement is that your pipeline has STT and a Conversation agent configured. A pipeline with no Conversation agent set will fail on any voice input that doesn't match a sentence.
+
+---
+
+## Languages
+
+HA Alarms speaks **English** and **German**. The language is taken from the Assist pipeline that heard the command, so a German satellite gets German sentences, German replies and German ring-time announcements, while an English one keeps working as before — side by side in the same installation.
+
+| Language | Sentence file |
+|---|---|
+| English | `config/custom_sentences/en/ha_alarms.yaml` |
+| Deutsch | `config/custom_sentences/de/ha_alarms.yaml` |
+
+Make sure the pipeline's language is set to *German* (or *English*) and that the matching sentence file is installed. Unsupported pipeline languages fall back to English replies.
+
+### Deutsche Sprachbefehle
+
+```
+stell einen Wecker auf 7 Uhr 30
+weck mich morgen um halb acht
+stell einen Wecker für Montag um viertel vor sieben
+weck mich in einer Stunde
+weck mich werktags um 6 Uhr          (täglich / werktags / am Wochenende)
+
+erinnere mich um 18 Uhr an Mama anrufen
+erinnere mich an den Zahnarzt morgen um 15 Uhr
+erinnere mich in 30 Minuten an die Wäsche
+
+snooze   |   schlummern für 10 Minuten   |   gib mir noch 5 Minuten
+stoppe den Wecker   |   wecker aus
+
+lösche den 7 Uhr Wecker   |   lösche die Erinnerung an Mama anrufen
+lösche alle Wecker   |   lösche alle Erinnerungen
+
+welche Wecker habe ich   |   wann klingelt mein Wecker   |   welche Erinnerungen habe ich
+```
+
+Understood German times include `7 Uhr 30`, `7:30`, `sieben Uhr dreißig`, `halb acht` (7:30), `viertel nach sieben`, `viertel vor acht`, `fünf vor halb acht`, `Mittag`, `Mitternacht`, relative forms such as `in anderthalb Stunden` / `in einer Viertelstunde`, and day words (`heute`, `morgen`, `übermorgen`, `Montag` …, also `morgen früh`, `heute Abend`).
+
+Hours from 1 to 12 are taken at face value on the 24-hour clock — "um sieben" is 07:00. For the evening say `19 Uhr` or `sieben Uhr abends` (`morgens`, `mittags`, `nachmittags`, `abends`, `nachts` are understood). The spoken confirmation always repeats the resulting time ("Wecker gestellt: morgen um 7:00 Uhr"), so mistakes are easy to catch.
+
+Adding another language means: a `custom_sentences/<lang>/ha_alarms.yaml`, a block in `i18n.py`, and a parser in `datetime_parser.py`.
 
 ---
 
@@ -225,8 +266,8 @@ For automation use, the integration exposes the following services:
 
 | Service | Description |
 |---|---|
-| `ha_alarms.set_alarm` | Schedule an alarm with optional label, repeat, and satellite |
-| `ha_alarms.set_reminder` | Schedule a reminder with a spoken label |
+| `ha_alarms.set_alarm` | Schedule an alarm with optional label, repeat, satellite, and `language` (`en`/`de`, default: HA language — controls how `time_str`/`date_str` are read) |
+| `ha_alarms.set_reminder` | Schedule a reminder with a spoken label (also accepts `language`) |
 | `ha_alarms.cancel_alarm` | Cancel the next scheduled alarm |
 | `ha_alarms.cancel_reminder` | Cancel the next scheduled reminder |
 | `ha_alarms.snooze` | Snooze the currently ringing alarm |
