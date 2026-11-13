@@ -4,6 +4,11 @@ Converts the raw string values of the {time} and {date} slots produced by HA's
 sentence engine into a tz-aware Python datetime. This is the single parser used
 by all intent handlers — there is no second inline parser in the handlers.
 
+Languages: English (default) and German.  Every public function takes an
+optional ``lang`` ("en" / "de", region suffixes such as "de-DE" are accepted;
+anything unknown falls back to English).  The German forms are listed at the
+end of this docstring.
+
 Supported input forms (English):
 
   Absolute time:
@@ -24,13 +29,44 @@ Supported input forms (English):
     "today", "tomorrow"
     Weekday names ("monday" … "sunday") → next occurrence, never today.
 
+Supported input forms (German, ``lang="de"``):
+
+  Absolute time (24 h clock; hours 1-12 are taken at face value — say
+  "19 Uhr" or "sieben Uhr abends" for the evening):
+    "7 Uhr", "7:30", "7.30 Uhr", "7 Uhr 30", "19:45", "sieben Uhr dreißig",
+    "sieben Uhr fünfundvierzig", "um acht"
+
+  Colloquial clock:
+    "halb acht" (7:30), "viertel nach sieben" (7:15), "viertel vor acht" (7:45),
+    "viertel acht" (7:15), "dreiviertel acht" (7:45), "fünf nach sieben",
+    "zehn vor acht", "fünf vor halb acht" (7:25), "fünf nach halb acht" (7:35)
+
+  Day period words (disambiguate 12-hour values):
+    morgens / früh / vormittags, mittags, nachmittags / abends, nachts
+
+  Special words:
+    "Mittag" (12:00), "Mitternacht" (0:00)
+
+  Relative time:
+    "in 30 Minuten", "in einer Stunde", "in zwei Stunden", "in anderthalb
+    Stunden", "in einer halben Stunde", "in einer Viertelstunde",
+    "in einer Stunde und 15 Minuten"
+
+  Date:
+    "heute", "morgen", "übermorgen", weekday names (Montag … Sonntag, with an
+    optional "am"/"nächsten"/"kommenden"), optionally followed by a day period
+    ("heute Abend", "morgen früh").  Weekdays → next occurrence, never today.
+
 Public API:
-    parse_datetime(time_text, date_text=None, now=None) -> datetime
+    parse_datetime(time_text, date_text=None, now=None, lang="en") -> datetime
+    parse_date(date_text, now=None, lang="en") -> date
+    parse_minutes(text, lang="en") -> int | None
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -252,6 +288,364 @@ def _next_weekday(now: datetime, target_weekday: int) -> datetime:
 
 
 # ---------------------------------------------------------------------------
+# Language helpers
+# ---------------------------------------------------------------------------
+
+def _lang_code(lang: Optional[str]) -> str:
+    """Return "de" or "en" for any language tag (unknown → "en")."""
+    if not lang:
+        return "en"
+    base = str(lang).replace("_", "-").split("-")[0].strip().lower()
+    return base if base in ("en", "de") else "en"
+
+
+# ---------------------------------------------------------------------------
+# German
+# ---------------------------------------------------------------------------
+
+_DE_UNITS: dict[str, int] = {
+    "null": 0, "ein": 1, "eins": 1, "eine": 1, "einen": 1, "einer": 1,
+    "zwei": 2, "zwo": 2, "drei": 3, "vier": 4, "funf": 5, "sechs": 6,
+    "sieben": 7, "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwolf": 12,
+    "dreizehn": 13, "vierzehn": 14, "funfzehn": 15, "sechzehn": 16,
+    "siebzehn": 17, "achtzehn": 18, "neunzehn": 19,
+}
+_DE_TENS: dict[str, int] = {
+    "zwanzig": 20, "dreissig": 30, "vierzig": 40, "funfzig": 50,
+    "sechzig": 60, "siebzig": 70, "achtzig": 80, "neunzig": 90,
+}
+
+_DE_DAYS: dict[str, int] = {
+    "montag": 0, "dienstag": 1, "mittwoch": 2, "donnerstag": 3,
+    "freitag": 4, "samstag": 5, "sonnabend": 5, "sonntag": 6,
+}
+_DE_DATE_WORDS = "heute|morgen|ubermorgen|" + "|".join(_DE_DAYS)
+_DE_DATE_FILLERS = {"am", "fur", "den", "dem", "diesen", "nachsten", "kommenden", "um"}
+
+# Day-period words → canonical period.  A bare "morgen" is the date
+# "tomorrow", so only "morgens" / "am morgen" count as a period.
+_DE_PERIODS: dict[str, str] = {
+    "morgens": "morning", "fruh": "morning", "vormittags": "morning",
+    "vormittag": "morning",
+    "mittags": "noon", "mittag": "noon",
+    "nachmittags": "afternoon", "nachmittag": "afternoon",
+    "abends": "evening", "abend": "evening",
+    "nachts": "night", "nacht": "night",
+}
+_DE_PERIOD_WORDS = "|".join(sorted(_DE_PERIODS, key=len, reverse=True))
+_DE_PERIOD_RE = re.compile(
+    rf"\b(?:(?:am|in der|in)\s+)?(?P<p>{_DE_PERIOD_WORDS}|(?<=am\s)morgen)\b"
+)
+
+# "morgen früh um 7", "am Montag 7:30", "heute Abend um acht", "morgen Mittag"
+_DE_DATE_PREFIX_RE = re.compile(
+    rf"^(?P<date>(?:(?:am|fur|den|diesen|nachsten|kommenden)\s+)*"
+    rf"(?:{_DE_DATE_WORDS})(?:\s+(?:{_DE_PERIOD_WORDS}))?)"
+    rf"(?:\s+(?:(?:um|gegen)\s+)?(?P<time>.+))?$"
+)
+
+
+def _de_fold(text: str) -> str:
+    """Lower-case, strip umlauts/ß and collapse whitespace.
+
+    "Fünf nach Zwölf" → "funf nach zwolf", "dreißig" → "dreissig".  STT output
+    sometimes spells umlauts out ("fuenf"); those variants are folded too.
+    """
+    s = text.lower().replace("ß", "ss")
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    for src, dst in (("fuenf", "funf"), ("zwoelf", "zwolf"),
+                     ("uebermorgen", "ubermorgen"), ("frueh", "fruh"),
+                     ("naechsten", "nachsten")):
+        s = s.replace(src, dst)
+    return re.sub(r"\s+", " ", s).strip(" .,!?")
+
+
+def _de_num(token: str) -> Optional[int]:
+    """0–99 as digits or German number word ("fünfundvierzig"); else None."""
+    token = token.strip()
+    if token.isdigit():
+        return int(token)
+    if token in _DE_UNITS:
+        return _DE_UNITS[token]
+    if token in _DE_TENS:
+        return _DE_TENS[token]
+    # "einundzwanzig" … "neunundneunzig"
+    idx = token.find("und")
+    while idx != -1:
+        ones, tens = token[:idx], token[idx + 3:]
+        if ones in _DE_UNITS and 1 <= _DE_UNITS[ones] <= 9 and tens in _DE_TENS:
+            return _DE_TENS[tens] + _DE_UNITS[ones]
+        idx = token.find("und", idx + 1)
+    return None
+
+
+def _de_extract_period(text: str) -> tuple[str, Optional[str]]:
+    """Remove day-period words from *text*; return (remaining, period|None)."""
+    found: list[str] = []
+
+    def _sub(m: re.Match) -> str:
+        p = m.group("p")
+        found.append(_DE_PERIODS.get(p, "morning"))   # "morgen" after "am" → morning
+        return " "
+
+    out = _DE_PERIOD_RE.sub(_sub, text)
+    return re.sub(r"\s+", " ", out).strip(), (found[0] if found else None)
+
+
+def _de_apply_period(hour: int, minute: int, period: Optional[str]) -> tuple[int, int]:
+    """Resolve a 1–12 hour with a day-period word to the 24 h clock."""
+    if period is None or hour > 12:
+        return hour, minute
+    if period == "noon":
+        if hour == 0:
+            hour = 12
+        elif 1 <= hour <= 4:
+            hour += 12
+    elif period in ("afternoon", "evening"):
+        if hour == 0:
+            hour = 12
+        elif 1 <= hour <= 11:
+            hour += 12
+    elif period == "night":
+        if hour == 12:
+            hour = 0
+        elif 6 <= hour <= 11:
+            hour += 12
+    # "morning": unchanged
+    return hour, minute
+
+
+def _parse_clock_de(txt: str) -> tuple[int, int]:
+    """Parse an already folded German clock expression into (hour, minute).
+
+    Raises ParseError if it cannot be understood.  Hours are returned as
+    spoken (0–24 → 0–23); day periods are applied by the caller.
+    """
+    original = txt
+    txt = re.sub(r"\b(?:genau|punkt|ziemlich|ungefahr|ca|circa|etwa|bitte|kurz)\b", " ", txt)
+    txt = re.sub(r"^\s*(?:um|gegen)\s+", "", txt)
+    txt = txt.replace("uhr", " ")
+    txt = re.sub(r"\bdrei\s+viertel\b", "dreiviertel", txt)
+    txt = re.sub(r"\s+", " ", txt).strip(" .,")
+    if not txt:
+        raise ParseError(f"Cannot parse time: {original!r}")
+
+    def _finish(h: int, m: int) -> tuple[int, int]:
+        if h == 24 and m == 0:
+            h = 0
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ParseError(f"Time out of range: {original!r}")
+        return h, m
+
+    def _hour_token(tok: str) -> int:
+        n = _de_num(tok)
+        if n is None or not (0 <= n <= 24):
+            raise ParseError(f"Cannot parse time: {original!r}")
+        return n
+
+    def _from_total(base_hour: int, delta: int) -> tuple[int, int]:
+        """base_hour is the spoken hour; delta is minutes relative to it.
+
+        "halb eins" is 12:30 in 12 h speech, not 0:30, so an hour of 1 that
+        goes below the hour is shown as 12:xx.
+        """
+        total = base_hour * 60 + delta
+        if base_hour == 1 and delta < 0:
+            total += 12 * 60
+        total %= 24 * 60
+        return divmod(total, 60)
+
+    m = re.fullmatch(r"(\d{1,2})[:.](\d{2})", txt)
+    if m:
+        return _finish(int(m.group(1)), int(m.group(2)))
+    m = re.fullmatch(r"(\d{1,2}) (\d{1,2})", txt)
+    if m:
+        return _finish(int(m.group(1)), int(m.group(2)))
+    m = re.fullmatch(r"\d{1,2}", txt)
+    if m:
+        return _finish(int(txt), 0)
+
+    toks = txt.split(" ")
+
+    # halb acht → 7:30
+    if len(toks) == 2 and toks[0] == "halb":
+        return _finish(*_from_total(_hour_token(toks[1]), -30))
+
+    # dreiviertel acht → 7:45, viertel acht → 7:15
+    if len(toks) == 2 and toks[0] == "dreiviertel":
+        return _finish(*_from_total(_hour_token(toks[1]), -15))
+    if len(toks) == 2 and toks[0] == "viertel":
+        return _finish(*_from_total(_hour_token(toks[1]), -45))
+
+    # viertel nach/vor X, N nach/vor X, N nach/vor halb X
+    m = re.fullmatch(r"(?P<n>.+?) (?P<dir>nach|vor) (?:(?P<half>halb) )?(?P<h>\S+)", txt)
+    if m:
+        n_txt = m.group("n")
+        if n_txt == "viertel":
+            n = 15
+        elif n_txt == "dreiviertel":
+            n = 45
+        else:
+            n = _de_num(n_txt)
+        if n is None or not (0 < n < 60):
+            raise ParseError(f"Cannot parse time: {original!r}")
+        offset = -30 if m.group("half") else 0
+        delta = offset + (n if m.group("dir") == "nach" else -n)
+        return _finish(*_from_total(_hour_token(m.group("h")), delta))
+
+    # "sieben dreissig", "sieben null funf", "sieben" (hour [+ minutes])
+    hour = _hour_token(toks[0])
+    rest = toks[1:]
+    if not rest:
+        return _finish(hour, 0)
+    if rest[0] == "null" and len(rest) == 2:
+        minute = _de_num(rest[1])
+    elif len(rest) == 1:
+        minute = _de_num(rest[0])
+    else:
+        minute = None
+    if minute is None:
+        raise ParseError(f"Cannot parse time: {original!r}")
+    return _finish(hour, minute)
+
+
+def _parse_relative_de(txt: str) -> Optional[timedelta]:
+    """Parse "in 30 Minuten", "in einer halben Stunde" …; None if not relative."""
+    if not re.search(r"stunde|minute|\bstd\b|\bmin\b", txt):
+        return None
+    t = re.sub(r"^in\s+", "", txt)
+    minutes = 0
+    matched = False
+
+    def _take(pattern: str, value) -> None:
+        nonlocal t
+
+        def _sub(m: re.Match) -> str:
+            nonlocal minutes, matched
+            matched = True
+            minutes += value(m) if callable(value) else value
+            return " "
+
+        t = re.sub(pattern, _sub, t)
+
+    art = r"(?:(?:eine|einer|ein)\s+)?"
+    _take(r"\banderthalb\s+stunden?\b", 90)
+    _take(r"\b(\w+?)einhalb\s+stunden?\b",
+          lambda m: (_de_num(m.group(1)) or 0) * 60 + 30)
+    _take(rf"{art}\bdreiviertel\s*stunden?\b", 45)
+    _take(rf"{art}\bviertel\s*stunden?\b", 15)
+    _take(rf"{art}\bhalben?\s+stunden?\b", 30)
+    _take(rf"{art}\bhalbe\s+stunden?\b", 30)
+
+    def _pair(m: re.Match) -> int:
+        n = _de_num(m.group("q"))
+        if n is None:
+            raise ParseError(f"Cannot parse time: {txt!r}")
+        return n * 60 if m.group("u").startswith(("stunde", "std")) else n
+
+    _take(r"\b(?P<q>\d+|\w+?)\s*(?P<u>stunden?|std\.?|minuten?|min\.?)(?!\w)", _pair)
+
+    if not matched or minutes <= 0:
+        return None
+    return timedelta(minutes=minutes)
+
+
+def _parse_date_de(date_text: str, now: datetime) -> tuple:
+    """Return (date, period|None) for a German date phrase."""
+    txt = _de_fold(date_text)
+    # "morgen" is a date here, not a day period, so only strip unambiguous
+    # period words and keep the first date token.
+    period = None
+    words = []
+    for tok in txt.split(" "):
+        if tok in _DE_DATE_FILLERS:
+            continue
+        if tok in _DE_PERIODS and tok not in ("morgen",):
+            period = period or _DE_PERIODS[tok]
+            continue
+        words.append(tok)
+    if len(words) != 1:
+        raise ParseError(f"Cannot parse date: {date_text!r}")
+    word = words[0]
+    if word == "heute":
+        return now.date(), period
+    if word == "morgen":
+        return (now + timedelta(days=1)).date(), period
+    if word == "ubermorgen":
+        return (now + timedelta(days=2)).date(), period
+    if word in _DE_DAYS:
+        return _next_weekday(now, _DE_DAYS[word]).date(), period
+    raise ParseError(f"Cannot parse date: {date_text!r}")
+
+
+def _parse_datetime_de(time_text: str, date_text: Optional[str], now: datetime) -> datetime:
+    """German counterpart of parse_datetime (see module docstring)."""
+    txt = _de_fold(time_text)
+
+    # Relative time ("in 30 Minuten") — date slot is ignored.
+    delta = _parse_relative_de(txt)
+    if delta is not None:
+        return now + delta
+
+    # Date embedded in the time slot ("morgen um 7 Uhr", "am Montag 7:30").
+    if date_text is None:
+        dm = _DE_DATE_PREFIX_RE.match(txt)
+        if dm:
+            date_text = dm.group("date")
+            txt = dm.group("time") or ""
+            delta = _parse_relative_de(txt)
+            if delta is not None:
+                return now + delta
+
+    txt, period = _de_extract_period(txt)
+    if period is None and date_text is not None:
+        # Period attached to the date ("heute Abend um 8", "morgen Mittag").
+        period = _parse_date_de(date_text, now)[1]
+
+    if txt == "mitternacht":
+        hour, minute = 0, 0
+    elif not txt and period == "noon":
+        hour, minute = 12, 0
+    elif not txt:
+        # "morgen" with a day period only ("heute Abend") or nothing usable.
+        raise ParseError(f"Cannot parse time: {time_text!r}")
+    else:
+        hour, minute = _parse_clock_de(txt)
+        hour, minute = _de_apply_period(hour, minute, period)
+
+    if date_text is not None:
+        target, _ = _parse_date_de(date_text, now)
+        return now.replace(
+            year=target.year, month=target.month, day=target.day,
+            hour=hour, minute=minute, second=0, microsecond=0,
+        )
+
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def parse_minutes(text: Optional[str], lang: Optional[str] = None) -> Optional[int]:
+    """Parse a spoken minute count ("5", "five", "fünf", "zehn Minuten").
+
+    Returns None if *text* is empty or not a number.
+    """
+    if not text:
+        return None
+    lang = _lang_code(lang)
+    if lang == "de":
+        tok = _de_fold(text).split(" ")[0]
+        return _de_num(tok)
+    tok = text.strip().lower().split(" ")[0].rstrip(".")
+    if tok.isdigit():
+        return int(tok)
+    return _WORD_TO_NUM.get(tok)
+
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -259,6 +653,7 @@ def parse_datetime(
     time_text: str,
     date_text: Optional[str] = None,
     now: Optional[datetime] = None,
+    lang: Optional[str] = None,
 ) -> datetime:
     """Parse a spoken time and optional spoken date into a tz-aware datetime.
 
@@ -274,6 +669,9 @@ def parse_datetime(
     now:
         Override the current time. Accepts any tz-aware datetime. Intended for
         unit tests.
+    lang:
+        "en" (default) or "de".  Selects the language of ``time_text`` and
+        ``date_text``.
 
     Returns
     -------
@@ -291,6 +689,9 @@ def parse_datetime(
     """
     _now = _current_now(now)
     time_text = time_text.strip()
+
+    if _lang_code(lang) == "de":
+        return _parse_datetime_de(time_text, date_text, _now)
 
     # -----------------------------------------------------------------------
     # Relative time — must be checked before absolute so "in an hour" doesn't
@@ -426,12 +827,15 @@ def _parse_date(date_text: str, now: datetime):
     raise ParseError(f"Cannot parse date: {date_text!r}")
 
 
-def parse_date(date_text: str, now: Optional[datetime] = None):
+def parse_date(date_text: str, now: Optional[datetime] = None, lang: Optional[str] = None):
     """Parse a spoken date string into a date object.
 
-    Accepts: "today", "tomorrow", weekday names ("monday" … "sunday").
+    Accepts: "today", "tomorrow", weekday names ("monday" … "sunday");
+    in German "heute", "morgen", "übermorgen" and the weekday names.
     Raises ParseError for unrecognised input.
     """
+    if _lang_code(lang) == "de":
+        return _parse_date_de(date_text.strip(), _current_now(now))[0]
     return _parse_date(date_text.strip(), _current_now(now))
 
 

@@ -25,6 +25,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
+from . import i18n
 from .const import (
     DEVICE_CONFIG,
     DOMAIN,
@@ -99,7 +100,11 @@ class HaAlarmsSensor(SensorEntity):
                 "satellite": satellite,
                 "satellite_name": satellite_name,
                 "scheduled_at": scheduled_at.isoformat() if scheduled_at else None,
-                "when": _human_when(scheduled_at, now) if scheduled_at else "unknown",
+                "when": (
+                    _human_when(scheduled_at, now, self.hass.config.language)
+                    if scheduled_at
+                    else i18n.t(self.hass.config.language, "when_unknown")
+                ),
             })
 
         # Sort: active first, then by scheduled time ascending.
@@ -132,37 +137,6 @@ class HaAlarmsSensor(SensorEntity):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _human_when(scheduled_at: datetime, now: datetime) -> str:
+def _human_when(scheduled_at: datetime, now: datetime, lang: str | None = None) -> str:
     """Return a compact human-readable relative time string."""
-    delta = scheduled_at - now
-    total_seconds = int(delta.total_seconds())
-
-    if total_seconds < 0:
-        return f"missed ({scheduled_at.strftime('%-I:%M %p')})"
-
-    if total_seconds < 60:
-        return f"in {total_seconds}s"
-
-    minutes = total_seconds // 60
-    if minutes < 60:
-        return f"in {minutes}m"
-
-    hours = minutes // 60
-    remaining_minutes = minutes % 60
-    if scheduled_at.date() == now.date():
-        base = f"today at {_fmt_time(scheduled_at)}"
-    elif scheduled_at.date() == (now + __import__('datetime').timedelta(days=1)).date():
-        base = f"tomorrow at {_fmt_time(scheduled_at)}"
-    else:
-        base = f"{scheduled_at.strftime('%A')} at {_fmt_time(scheduled_at)}"
-
-    if hours < 24 and remaining_minutes:
-        return f"in {hours}h {remaining_minutes}m ({base})"
-    return base
-
-
-def _fmt_time(dt: datetime) -> str:
-    try:
-        return dt.strftime("%-I:%M %p").lstrip("0") or dt.strftime("%I:%M %p")
-    except ValueError:
-        return dt.strftime("%I:%M %p").lstrip("0")
+    return i18n.human_when(scheduled_at, now, lang)

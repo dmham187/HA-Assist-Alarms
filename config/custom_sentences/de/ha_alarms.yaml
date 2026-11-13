@@ -1,0 +1,161 @@
+# Eigene Sätze (Deutsch) für die ha_alarms-Integration.
+#
+# Die Intent-Namen müssen exakt denen in intent_handler.py entsprechen und
+# sind identisch zur englischen Datei (config/custom_sentences/en/ha_alarms.yaml).
+#
+# Alle Zeit-, Datums-, Label- und Minuten-Slots sind Wildcards: der gesprochene
+# Text wird unverändert an datetime_parser.py (lang="de") weitergereicht.
+# Dadurch funktionieren u. a. "7 Uhr 30", "halb acht", "viertel nach sieben",
+# "in einer halben Stunde", "morgen früh um sieben" oder "heute Abend um 8"
+# ohne dass jede Variante hier aufgezählt werden muss.
+#
+# Slot-Referenzen:   {time}, {date}, {label}, {minutes}
+# Optionale Wörter:  [wort]
+# Alternativen:      (wort1|wort2)
+#
+# --- Hinweis zu eingebauten Intents ---
+# HaAlarmsSetAlarm überlagert bewusst HAs eingebautes HassSetAlarm, falls es das
+# in der jeweiligen Sprache gibt. "Wie spät ist es" / "Welcher Tag ist heute"
+# (HassGetCurrentTime / HassGetCurrentDate) werden bewusst NICHT überlagert.
+
+language: "de"
+
+intents:
+
+  HaAlarmsSetAlarm:
+    data:
+      # Einmalig (Standard)
+      - sentences:
+          - "(stell|stelle) [mir] [einen] wecker (auf|für|um) {time}"
+          - "(stell|stelle) [mir] [einen] wecker (auf|für) {date} um {time}"
+          - "(stell|stelle) [mir] [einen] wecker in {time}"
+          - "(stell|stelle) [mir] [einen] wecker {time}"
+          - "(weck|wecke) mich um {time}"
+          - "(weck|wecke) mich am {date} um {time}"
+          - "(weck|wecke) mich {date} um {time}"
+          - "(weck|wecke) mich in {time}"
+          - "(weck|wecke) mich {time}"
+      # Täglich — der Slot "repeat" wird von der Satz-Engine gesetzt
+      - sentences:
+          - "(stell|stelle) [mir] [einen] täglichen wecker (auf|für|um) {time}"
+          - "(stell|stelle) [mir] [einen] wecker (auf|für|um) {time} (täglich|jeden tag)"
+          - "(stell|stelle) [mir] [einen] wecker (täglich|jeden tag) (auf|für|um) {time}"
+          - "(weck|wecke) mich (täglich|jeden tag) um {time}"
+        slots:
+          repeat: "daily"
+      - sentences:
+          - "(stell|stelle) [mir] [einen] wecker (auf|für|um) {time} (werktags|wochentags|montags bis freitags|an werktagen|an wochentagen)"
+          - "(stell|stelle) [mir] [einen] wecker (werktags|wochentags|montags bis freitags|an werktagen|an wochentagen) (auf|für|um) {time}"
+          - "(weck|wecke) mich (werktags|wochentags|montags bis freitags|an werktagen|an wochentagen) um {time}"
+        slots:
+          repeat: "weekdays"
+      - sentences:
+          - "(stell|stelle) [mir] [einen] wecker (auf|für|um) {time} (am wochenende|an wochenenden|samstags und sonntags)"
+          - "(stell|stelle) [mir] [einen] wecker (am wochenende|an wochenenden|samstags und sonntags) (auf|für|um) {time}"
+          - "(weck|wecke) mich (am wochenende|an wochenenden|samstags und sonntags) um {time}"
+        slots:
+          repeat: "weekends"
+
+  HaAlarmsSetReminder:
+    data:
+      - sentences:
+          - "erinnere mich um {time} an {label}"
+          - "erinnere mich um {time} daran {label}"
+          - "erinnere mich am {date} um {time} an {label}"
+          - "erinnere mich am {date} um {time} daran {label}"
+          - "erinnere mich {date} um {time} an {label}"
+          - "erinnere mich {date} um {time} daran {label}"
+          # Relative Zeit: "erinnere mich in 30 Minuten an Mama anrufen"
+          - "erinnere mich in {time} an {label}"
+          - "erinnere mich in {time} daran {label}"
+          # Natürliche Reihenfolge: "erinnere mich an den Zahnarzt um 15 Uhr"
+          - "erinnere mich an {label} um {time}"
+          - "erinnere mich an {label} am {date} um {time}"
+          - "erinnere mich an {label} in {time}"
+          - "(stell|stelle) [mir] eine erinnerung für {time} an {label}"
+          - "(stell|stelle) [mir] eine erinnerung für {date} um {time} an {label}"
+          - "(stell|stelle) [mir] eine erinnerung an {label} für {time}"
+          - "(erstelle|erstell) [mir] eine erinnerung an {label} um {time}"
+
+  HaAlarmsCancelAlarm:
+    data:
+      - sentences:
+          - "(lösche|entferne|storniere) (den|meinen) {label} wecker"
+          - "(lösche|entferne|storniere) [den|meinen] wecker (für|um|von) {label}"
+
+  HaAlarmsCancelReminder:
+    data:
+      - sentences:
+          - "(lösche|entferne|storniere) (die|meine) {label} erinnerung"
+          - "(lösche|entferne|storniere) [die|meine] erinnerung (an|für|um|zu) {label}"
+
+  HaAlarmsStopAlarm:
+    data:
+      - sentences:
+          - "(stopp|stoppe|beende|deaktiviere|lösche|storniere) [den] wecker"
+          - "[den] wecker (stoppen|beenden|ausschalten|deaktivieren|löschen|abbrechen)"
+          - "(schalte|mach|mache) [den] wecker aus"
+          - "wecker aus"
+
+  HaAlarmsStopReminder:
+    data:
+      - sentences:
+          - "(stopp|stoppe|beende|lösche|storniere) [die] erinnerung"
+          - "[die] erinnerung (stoppen|beenden|löschen|abbrechen)"
+
+  HaAlarmsSnoozeAlarm:
+    data:
+      - sentences:
+          - "(snooze|schlummern|schlummere|schlummer) [den wecker]"
+          - "(snooze|schlummern|schlummere|schlummer) [den] wecker [für] {minutes} minuten"
+          - "(snooze|schlummern|schlummere|schlummer) [für] {minutes} minuten"
+          - "(verschiebe|verschieb) [den] wecker um {minutes} minuten"
+          - "gib mir noch {minutes} minuten"
+          - "ich brauche noch {minutes} minuten"
+          - "lass mich noch {minutes} minuten schlafen"
+
+  HaAlarmsSnoozeReminder:
+    data:
+      - sentences:
+          - "(snooze|schlummern|schlummere|schlummer) [die erinnerung]"
+          - "(snooze|schlummern|schlummere|schlummer) [die] erinnerung [für] {minutes} minuten"
+          - "(verschiebe|verschieb) [die] erinnerung um {minutes} minuten"
+
+  HaAlarmsListAlarms:
+    data:
+      - sentences:
+          - "welche wecker habe ich [gestellt]"
+          - "welche wecker sind [gestellt|aktiv]"
+          - "(liste|zeige|zeig) [mir] (meine|die) wecker [auf]"
+          - "wann (klingelt|geht) (mein|der) wecker [los]"
+          - "wann ist mein wecker"
+          - "habe ich (einen wecker|wecker) [gestellt]"
+          - "sind wecker gestellt"
+
+  HaAlarmsListReminders:
+    data:
+      - sentences:
+          - "welche erinnerungen habe ich [gestellt]"
+          - "(liste|zeige|zeig) [mir] (meine|die) erinnerungen [auf]"
+          - "habe ich (eine erinnerung|erinnerungen) [gestellt]"
+
+  HaAlarmsCancelAllAlarms:
+    data:
+      - sentences:
+          - "(lösche|entferne|storniere|beende) alle [meine] wecker"
+          - "(schalte|mach|mache) alle [meine] wecker aus"
+
+  HaAlarmsCancelAllReminders:
+    data:
+      - sentences:
+          - "(lösche|entferne|storniere|beende) alle [meine] erinnerungen"
+
+lists:
+  time:
+    wildcard: true
+  date:
+    wildcard: true
+  label:
+    wildcard: true
+  minutes:
+    wildcard: true

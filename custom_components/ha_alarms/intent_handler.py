@@ -18,7 +18,7 @@ guards against double-registration with a flag in hass.data.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -35,8 +35,15 @@ from .const import (
     ITEM_TYPE_REMINDER,
     REPEAT_ONCE,
 )
+from . import i18n
 from .coordinator import AlarmCoordinator
-from .datetime_parser import ParseAmbiguousError, ParseError, parse_date, parse_datetime
+from .datetime_parser import (
+    ParseAmbiguousError,
+    ParseError,
+    parse_date,
+    parse_datetime,
+    parse_minutes,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -129,17 +136,18 @@ def _get_coordinator(hass: HomeAssistant) -> AlarmCoordinator:
     return hass.data[DOMAIN]
 
 
-def _format_dt_for_speech(dt: datetime, now: datetime) -> str:
+def _lang(intent_obj: intent.Intent) -> str:
+    """Return the supported language code of the Assist pipeline that sent the intent."""
+    return i18n.normalize_lang(getattr(intent_obj, "language", None))
+
+
+def _format_dt_for_speech(dt: datetime, now: datetime, lang: str = "en") -> str:
     """Format a datetime as a natural spoken string.
 
-    Examples: "7:30 AM", "7:30 AM tomorrow", "7:30 AM on Monday"
+    en: "7:30 AM", "7:30 AM tomorrow", "7:30 AM on Monday"
+    de: "heute um 7:30 Uhr", "morgen um 7:30 Uhr", "am Montag um 7:30 Uhr"
     """
-    time_str = dt.strftime("%I:%M %p").lstrip("0")
-    if dt.date() == now.date():
-        return time_str
-    if dt.date() == (now + timedelta(days=1)).date():
-        return f"{time_str} tomorrow"
-    return f"{time_str} on {dt.strftime('%A')}"
+    return i18n.when(dt, now, lang)
 
 
 def _parse_slots(
@@ -149,19 +157,20 @@ def _parse_slots(
 
     Returns (datetime, None) on success or (None, error_speech) on failure.
     """
+    lang = _lang(intent_obj)
     time_text = _slot(intent_obj, "time")
     if not time_text:
-        return None, "Sorry, I didn't catch the time."
+        return None, i18n.t(lang, "time_missing")
 
     date_text = _slot(intent_obj, "date")
 
     try:
-        scheduled_at = parse_datetime(time_text, date_text, now=dt_util.now())
+        scheduled_at = parse_datetime(time_text, date_text, now=dt_util.now(), lang=lang)
         return scheduled_at, None
     except ParseAmbiguousError as exc:
         return None, str(exc)
     except ParseError:
-        return None, "Sorry, I didn't understand that time."
+        return None, i18n.t(lang, "time_unparsed")
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +191,8 @@ class SetAlarmHandler(intent.IntentHandler):
             response.async_set_speech(error)
             return response
 
-        label = _slot(intent_obj, "label") or "Alarm"
+        lang = _lang(intent_obj)
+        label = _slot(intent_obj, "label") or i18n.default_label(lang, ITEM_TYPE_ALARM)
         satellite_id = _extract_satellite_id(intent_obj)
         repeat = _slot(intent_obj, "repeat") or REPEAT_ONCE
 
@@ -192,13 +202,15 @@ class SetAlarmHandler(intent.IntentHandler):
             ATTR_SATELLITE: satellite_id,
             "scheduled_at": scheduled_at,
             ATTR_REPEAT: repeat,
+            "language": lang,
         })
 
-        spoken_time = _format_dt_for_speech(scheduled_at, dt_util.now())
+        spoken_time = _format_dt_for_speech(scheduled_at, dt_util.now(), lang)
         if repeat == REPEAT_ONCE:
-            response.async_set_speech(f"Alarm set for {spoken_time}.")
+            response.async_set_speech(i18n.t(lang, "alarm_set", when=spoken_time))
         else:
-            response.async_set_speech(f"{repeat.capitalize()} alarm set for {spoken_time}.")
+            key = f"alarm_set_{repeat}"
+            response.async_set_speech(i18n.t(lang, key, when=spoken_time))
         return response
 
 
@@ -211,9 +223,10 @@ class SetReminderHandler(intent.IntentHandler):
         hass = intent_obj.hass
         response = intent_obj.create_response()
 
+        lang = _lang(intent_obj)
         label = _slot(intent_obj, "label")
         if not label:
-            response.async_set_speech("Sorry, what should I remind you about?")
+            response.async_set_speech(i18n.t(lang, "ask_reminder_label"))
             return response
 
         scheduled_at, error = _parse_slots(intent_obj)
@@ -229,10 +242,13 @@ class SetReminderHandler(intent.IntentHandler):
             ATTR_SATELLITE: satellite_id,
             "scheduled_at": scheduled_at,
             ATTR_REPEAT: REPEAT_ONCE,
+            "language": lang,
         })
 
-        spoken_time = _format_dt_for_speech(scheduled_at, dt_util.now())
-        response.async_set_speech(f"Reminder set for {spoken_time}: {label}.")
+        spoken_time = _format_dt_for_speech(scheduled_at, dt_util.now(), lang)
+        response.async_set_speech(
+            i18n.t(lang, "reminder_set", when=spoken_time, label=label)
+        )
         return response
 
 
@@ -249,6 +265,7 @@ class StopAlarmHandler(intent.IntentHandler):
         hass = intent_obj.hass
         coordinator = _get_coordinator(hass)
         response = intent_obj.create_response()
+        lang = _lang(intent_obj)
 
         active = [
             i for i in coordinator.get_items()
@@ -256,16 +273,18 @@ class StopAlarmHandler(intent.IntentHandler):
         ]
         if active:
             await coordinator.stop_all_active(item_type=ITEM_TYPE_ALARM)
-            response.async_set_speech("Alarm stopped.")
+            response.async_set_speech(i18n.t(lang, "alarm_stopped"))
         else:
             satellite_id = _extract_satellite_id(intent_obj)
             cancelled = await coordinator.cancel_next_scheduled(ITEM_TYPE_ALARM, satellite_id)
             if cancelled:
-                spoken_time = _format_dt_for_speech(cancelled["scheduled_at"], dt_util.now())
-                label = cancelled.get("label", "Alarm")
-                response.async_set_speech(f"{label} for {spoken_time} cancelled.")
+                spoken_time = _format_dt_for_speech(cancelled["scheduled_at"], dt_util.now(), lang)
+                label = cancelled.get("label") or i18n.default_label(lang, ITEM_TYPE_ALARM)
+                response.async_set_speech(
+                    i18n.t(lang, "item_cancelled", label=label, when=spoken_time)
+                )
             else:
-                response.async_set_speech("No alarm found.")
+                response.async_set_speech(i18n.t(lang, "no_alarm_found"))
         return response
 
 
@@ -278,6 +297,7 @@ class StopReminderHandler(intent.IntentHandler):
         hass = intent_obj.hass
         coordinator = _get_coordinator(hass)
         response = intent_obj.create_response()
+        lang = _lang(intent_obj)
 
         active = [
             i for i in coordinator.get_items()
@@ -285,15 +305,15 @@ class StopReminderHandler(intent.IntentHandler):
         ]
         if active:
             await coordinator.stop_all_active(item_type=ITEM_TYPE_REMINDER)
-            response.async_set_speech("Reminder stopped.")
+            response.async_set_speech(i18n.t(lang, "reminder_stopped"))
         else:
             satellite_id = _extract_satellite_id(intent_obj)
             cancelled = await coordinator.cancel_next_scheduled(ITEM_TYPE_REMINDER, satellite_id)
             if cancelled:
-                label = cancelled.get("label", "Reminder")
-                response.async_set_speech(f"Reminder '{label}' cancelled.")
+                label = cancelled.get("label") or i18n.default_label(lang, ITEM_TYPE_REMINDER)
+                response.async_set_speech(i18n.t(lang, "reminder_cancelled", label=label))
             else:
-                response.async_set_speech("No reminder found.")
+                response.async_set_speech(i18n.t(lang, "no_reminder_found"))
         return response
 
 
@@ -353,14 +373,6 @@ class CancelReminderHandler(intent.IntentHandler):
 # List handlers
 # ---------------------------------------------------------------------------
 
-_COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}
-
-
-def _count_word(n: int) -> str:
-    """Return 'one', 'two', … 'five' for 1–5; digits for 6+."""
-    return _COUNT_WORDS.get(n, str(n))
-
-
 class ListAlarmsHandler(intent.IntentHandler):
     """HaAlarmsListAlarms — list scheduled alarms on the originating satellite."""
 
@@ -371,33 +383,12 @@ class ListAlarmsHandler(intent.IntentHandler):
         coordinator = _get_coordinator(hass)
         response = intent_obj.create_response()
         satellite_id = _extract_satellite_id(intent_obj)
+        lang = _lang(intent_obj)
         now = dt_util.now()
 
         items = coordinator.get_scheduled_items(ITEM_TYPE_ALARM, satellite_id)
-
-        if not items:
-            response.async_set_speech("You have no alarms set.")
-        elif len(items) == 1:
-            t = _format_dt_for_speech(items[0]["scheduled_at"], now)
-            response.async_set_speech(f"You have one alarm set: {t}.")
-        elif len(items) == 2:
-            t1 = _format_dt_for_speech(items[0]["scheduled_at"], now)
-            t2 = _format_dt_for_speech(items[1]["scheduled_at"], now)
-            response.async_set_speech(f"You have two alarms set: {t1} and {t2}.")
-        else:
-            n = len(items)
-            first3 = [_format_dt_for_speech(i["scheduled_at"], now) for i in items[:3]]
-            listed = f"{first3[0]}, {first3[1]}, and {first3[2]}"
-            remaining = n - 3
-            if remaining > 0:
-                extra = f" and {_count_word(remaining)} more"
-                response.async_set_speech(
-                    f"You have {_count_word(n)} alarms set: {listed}{extra}."
-                )
-            else:
-                response.async_set_speech(
-                    f"You have {_count_word(n)} alarms set: {listed}."
-                )
+        entries = [_format_dt_for_speech(i["scheduled_at"], now, lang) for i in items]
+        response.async_set_speech(i18n.list_message(lang, ITEM_TYPE_ALARM, entries))
         return response
 
 
@@ -411,37 +402,18 @@ class ListRemindersHandler(intent.IntentHandler):
         coordinator = _get_coordinator(hass)
         response = intent_obj.create_response()
         satellite_id = _extract_satellite_id(intent_obj)
+        lang = _lang(intent_obj)
         now = dt_util.now()
 
         items = coordinator.get_scheduled_items(ITEM_TYPE_REMINDER, satellite_id)
 
         def _fmt_reminder(item: dict) -> str:
-            label = (item.get(ATTR_LABEL) or "").strip() or "reminder"
-            t = _format_dt_for_speech(item["scheduled_at"], now)
-            return f"{label} at {t}"
+            label = (item.get(ATTR_LABEL) or "").strip() or i18n.t(lang, "reminder")
+            t = _format_dt_for_speech(item["scheduled_at"], now, lang)
+            return i18n.reminder_entry(label, t, lang)
 
-        if not items:
-            response.async_set_speech("You have no reminders set.")
-        elif len(items) == 1:
-            response.async_set_speech(f"You have one reminder set: {_fmt_reminder(items[0])}.")
-        elif len(items) == 2:
-            r1 = _fmt_reminder(items[0])
-            r2 = _fmt_reminder(items[1])
-            response.async_set_speech(f"You have two reminders set: {r1} and {r2}.")
-        else:
-            n = len(items)
-            first3 = [_fmt_reminder(i) for i in items[:3]]
-            listed = f"{first3[0]}, {first3[1]}, and {first3[2]}"
-            remaining = n - 3
-            if remaining > 0:
-                extra = f" and {_count_word(remaining)} more"
-                response.async_set_speech(
-                    f"You have {_count_word(n)} reminders set: {listed}{extra}."
-                )
-            else:
-                response.async_set_speech(
-                    f"You have {_count_word(n)} reminders set: {listed}."
-                )
+        entries = [_fmt_reminder(i) for i in items]
+        response.async_set_speech(i18n.list_message(lang, ITEM_TYPE_REMINDER, entries))
         return response
 
 
@@ -473,7 +445,8 @@ async def _handle_cancel_all(
     hass = intent_obj.hass
     coordinator = _get_coordinator(hass)
     response = intent_obj.create_response()
-    noun_plural = "alarms" if item_type == ITEM_TYPE_ALARM else "reminders"
+    lang = _lang(intent_obj)
+    plural = "alarms" if item_type == ITEM_TYPE_ALARM else "reminders"
     satellite_id = _extract_satellite_id(intent_obj)
 
     # Stop any currently-ringing items of this type first.
@@ -483,9 +456,9 @@ async def _handle_cancel_all(
     count = await coordinator.cancel_all_scheduled(item_type, satellite_id)
 
     if count == 0:
-        response.async_set_speech(f"No {noun_plural} to cancel.")
+        response.async_set_speech(i18n.t(lang, f"none_to_cancel_{plural}"))
     else:
-        response.async_set_speech(f"All {noun_plural} cancelled.")
+        response.async_set_speech(i18n.t(lang, f"all_cancelled_{plural}"))
     return response
 
 
@@ -495,6 +468,7 @@ async def _handle_cancel(
     hass = intent_obj.hass
     coordinator = _get_coordinator(hass)
     response = intent_obj.create_response()
+    lang = _lang(intent_obj)
     noun = "alarm" if item_type == ITEM_TYPE_ALARM else "reminder"
 
     label_query = _slot(intent_obj, "label")
@@ -509,7 +483,7 @@ async def _handle_cancel(
         #    expression (e.g. "cancel 9 am alarm", "cancel sunday 3 pm alarm").
         if not cancelled:
             try:
-                target_dt = parse_datetime(label_query, now=dt_util.now())
+                target_dt = parse_datetime(label_query, now=dt_util.now(), lang=lang)
                 cancelled = await coordinator.cancel_by_time(item_type, target_dt, satellite_id)
             except (ParseAmbiguousError, ParseError):
                 pass
@@ -518,7 +492,7 @@ async def _handle_cancel(
         #    "cancel tomorrow alarm") — matches any alarm on that day.
         if not cancelled:
             try:
-                target_date = parse_date(label_query, now=dt_util.now())
+                target_date = parse_date(label_query, now=dt_util.now(), lang=lang)
                 cancelled = await coordinator.cancel_by_date(item_type, target_date, satellite_id)
             except ParseError:
                 pass
@@ -526,14 +500,16 @@ async def _handle_cancel(
         cancelled = await coordinator.cancel_next_scheduled(item_type, satellite_id)
 
     if cancelled:
-        label = cancelled.get("label") or noun.capitalize()
-        spoken_time = _format_dt_for_speech(cancelled["scheduled_at"], dt_util.now())
-        response.async_set_speech(f"{label} for {spoken_time} cancelled.")
+        label = cancelled.get("label") or i18n.default_label(lang, item_type)
+        spoken_time = _format_dt_for_speech(cancelled["scheduled_at"], dt_util.now(), lang)
+        response.async_set_speech(
+            i18n.t(lang, "item_cancelled", label=label, when=spoken_time)
+        )
     else:
         if label_query:
-            response.async_set_speech(f"No {noun} matching '{label_query}' found.")
+            response.async_set_speech(i18n.t(lang, f"no_{noun}_matching", query=label_query))
         else:
-            response.async_set_speech(f"No {noun} found.")
+            response.async_set_speech(i18n.t(lang, f"no_{noun}_found"))
     return response
 
 
@@ -543,13 +519,11 @@ async def _handle_snooze(
     hass = intent_obj.hass
     coordinator = _get_coordinator(hass)
     response = intent_obj.create_response()
+    lang = _lang(intent_obj)
 
     minutes_raw = _slot(intent_obj, "minutes")
-    try:
-        minutes = int(minutes_raw) if minutes_raw is not None else DEFAULT_SNOOZE_MINUTES
-        if minutes <= 0:
-            raise ValueError("minutes must be positive")
-    except (ValueError, TypeError):
+    minutes = parse_minutes(minutes_raw, lang) if minutes_raw is not None else None
+    if minutes is None or minutes <= 0:
         minutes = DEFAULT_SNOOZE_MINUTES
 
     satellite_id = _extract_satellite_id(intent_obj)
@@ -565,12 +539,12 @@ async def _handle_snooze(
 
     if not active:
         noun = "alarm" if item_type == ITEM_TYPE_ALARM else "reminder"
-        response.async_set_speech(f"There's no {noun} currently ringing.")
+        response.async_set_speech(i18n.t(lang, f"nothing_ringing_{noun}"))
         return response
 
     # Snooze the item that fired most recently (latest scheduled_at).
     target = max(active, key=lambda it: it.get("scheduled_at") or datetime.min)
     await coordinator.snooze_item(target["id"], minutes)
 
-    response.async_set_speech(f"Snoozed for {minutes} minutes.")
+    response.async_set_speech(i18n.t(lang, "snoozed", minutes=minutes))
     return response

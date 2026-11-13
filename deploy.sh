@@ -7,8 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMBA="/Volumes/config"
 SRC_INTEGRATION="$SCRIPT_DIR/custom_components/ha_alarms"
 DST_INTEGRATION="$SAMBA/custom_components/ha_alarms"
-SRC_SENTENCES="$SCRIPT_DIR/config/custom_sentences/en/ha_alarms.yaml"
-DST_SENTENCES="$SAMBA/custom_sentences/en/ha_alarms.yaml"
+SRC_SENTENCES_DIR="$SCRIPT_DIR/config/custom_sentences"
+DST_SENTENCES_DIR="$SAMBA/custom_sentences"
 
 # ---------------------------------------------------------------------------
 # Pre-flight: confirm Samba share is mounted
@@ -43,12 +43,16 @@ for f in "$SRC_INTEGRATION"/*; do
 done
 
 # ---------------------------------------------------------------------------
-# Copy sentence YAML
+# Copy sentence YAML (one file per language)
 # ---------------------------------------------------------------------------
 echo ""
-echo "Sentence file:"
-cp "$SRC_SENTENCES" "$DST_SENTENCES"
-echo "  ✓  custom_sentences/en/ha_alarms.yaml"
+echo "Sentence files:"
+for src in "$SRC_SENTENCES_DIR"/*/ha_alarms.yaml; do
+  lang=$(basename "$(dirname "$src")")
+  mkdir -p "$DST_SENTENCES_DIR/$lang"
+  cp "$src" "$DST_SENTENCES_DIR/$lang/ha_alarms.yaml"
+  echo "  ✓  custom_sentences/$lang/ha_alarms.yaml"
+done
 
 # ---------------------------------------------------------------------------
 # Done

@@ -189,6 +189,8 @@ class AlarmCoordinator:
             ATTR_VOLUME_RAMP: volume_ramp,
             "enabled": data.get("enabled", True),
             "status": _STATUS_SCHEDULED,
+            # Assist pipeline language at scheduling time; used for the ring-time TTS.
+            "language": data.get("language"),
         }
         self._items[item_id] = item
         self._schedule_callback(item_id, item["scheduled_at"])

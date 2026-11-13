@@ -42,6 +42,7 @@ from .const import (
     SERVICE_SNOOZE,
     SERVICE_STOP_ALL,
 )
+from . import i18n
 from .coordinator import AlarmCoordinator
 from .datetime_parser import ParseAmbiguousError, ParseError, parse_datetime
 from .intent_handler import (
@@ -88,6 +89,7 @@ _SCHEMA_SET_ALARM = vol.Schema(
         vol.Optional("date_str"): str,
         vol.Optional(ATTR_LABEL, default="Alarm"): str,
         vol.Optional(ATTR_REPEAT, default=REPEAT_ONCE): str,
+        vol.Optional("language"): str,
     }
 )
 
@@ -98,6 +100,7 @@ _SCHEMA_SET_REMINDER = vol.Schema(
         vol.Optional("date_str"): str,
         vol.Required(ATTR_LABEL): str,
         vol.Optional(ATTR_REPEAT, default=REPEAT_ONCE): str,
+        vol.Optional("language"): str,
     }
 )
 
@@ -137,6 +140,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 ATTR_SATELLITE: call.data.get(ATTR_SATELLITE),
                 "scheduled_at": scheduled_at,
                 ATTR_REPEAT: call.data.get(ATTR_REPEAT, REPEAT_ONCE),
+                "language": _call_language(call),
             }
         )
 
@@ -151,6 +155,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 ATTR_SATELLITE: call.data.get(ATTR_SATELLITE),
                 "scheduled_at": scheduled_at,
                 ATTR_REPEAT: call.data.get(ATTR_REPEAT, REPEAT_ONCE),
+                "language": _call_language(call),
             }
         )
 
@@ -228,17 +233,24 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _call_language(call: ServiceCall) -> str:
+    """Language for a service call: explicit ``language`` field, else HA's language."""
+    return i18n.normalize_lang(call.data.get("language") or call.hass.config.language)
+
+
 def _parse_time_from_call(call: ServiceCall) -> tuple:
     """Parse time/date strings from a service call into a tz-aware datetime.
 
     Returns (datetime, None) on success or (None, error_message) on failure.
+    The strings are interpreted in the call's language (see ``_call_language``).
     """
+    lang = _call_language(call)
     time_text = call.data.get("time_str", "")
     date_text = call.data.get("date_str") or None
     try:
-        scheduled_at = parse_datetime(time_text, date_text, now=dt_util.now())
+        scheduled_at = parse_datetime(time_text, date_text, now=dt_util.now(), lang=lang)
         return scheduled_at, None
     except ParseAmbiguousError as exc:
         return None, str(exc)
     except ParseError as exc:
-        return None, f"Could not parse time: {exc}"
+        return None, i18n.t(lang, "service_parse_error", detail=exc)

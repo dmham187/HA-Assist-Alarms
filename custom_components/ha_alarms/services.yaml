@@ -32,6 +32,16 @@ set_alarm:
       selector:
         entity:
           domain: assist_satellite
+    language:
+      name: Language
+      description: "Language of the time/date text and of spoken replies: en or de. Defaults to the Home Assistant language."
+      required: false
+      example: "de"
+      selector:
+        select:
+          options:
+            - en
+            - de
     repeat:
       name: Repeat
       description: "Recurrence: once, daily, weekdays, or weekends."
@@ -78,6 +88,16 @@ set_reminder:
       selector:
         entity:
           domain: assist_satellite
+    language:
+      name: Language
+      description: "Language of the time/date text and of spoken replies: en or de. Defaults to the Home Assistant language."
+      required: false
+      example: "de"
+      selector:
+        select:
+          options:
+            - en
+            - de
     repeat:
       name: Repeat
       description: "Recurrence: once, daily, weekdays, or weekends."

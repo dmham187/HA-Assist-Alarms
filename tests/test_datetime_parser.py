@@ -26,6 +26,8 @@ ParseAmbiguousError = _mod.ParseAmbiguousError
 ParseError = _mod.ParseError
 _normalise_time_str = _mod._normalise_time_str
 parse_datetime = _mod.parse_datetime
+parse_date = _mod.parse_date
+parse_minutes = _mod.parse_minutes
 
 # ---------------------------------------------------------------------------
 # Fixed reference: Wednesday 2026-03-25 14:00:00 UTC
@@ -337,3 +339,189 @@ class TestTrailingPeriodVariants:
         # "Set alarm for 3:00 PM." — sentence-ending period after colon-format time
         result = parse_datetime("3:00 PM.", now=_REF_MIDNIGHT)
         assert result == dt2(15, 0)
+
+
+# ===========================================================================
+# German (lang="de")
+# _REF is Wednesday 14:00 UTC: morning times roll over to tomorrow, evening
+# times stay today.
+# ===========================================================================
+
+import pytest
+
+
+def de(time_text, date_text=None):
+    return parse_datetime(time_text, date_text, now=_REF, lang="de")
+
+
+class TestGermanAbsoluteTime:
+    @pytest.mark.parametrize("text, expected", [
+        ("7 Uhr", dt(7, 0, 1)),
+        ("7:30", dt(7, 30, 1)),
+        ("7.30 Uhr", dt(7, 30, 1)),
+        ("7 Uhr 30", dt(7, 30, 1)),
+        ("07:05", dt(7, 5, 1)),
+        ("19:45", dt(19, 45)),
+        ("19 Uhr", dt(19, 0)),
+        ("um acht", dt(8, 0, 1)),
+        ("sieben Uhr", dt(7, 0, 1)),
+        ("sieben Uhr dreißig", dt(7, 30, 1)),
+        ("sieben Uhr dreissig", dt(7, 30, 1)),
+        ("sieben Uhr fünfundvierzig", dt(7, 45, 1)),
+        ("sieben Uhr fuenfzehn", dt(7, 15, 1)),
+        ("sieben Uhr null fünf", dt(7, 5, 1)),
+        ("null Uhr dreißig", dt(0, 30, 1)),
+        ("achtzehn Uhr", dt(18, 0)),
+    ])
+    def test_forms(self, text, expected):
+        assert de(text) == expected
+
+    def test_bare_hour_is_face_value_not_ambiguous(self):
+        # Unlike English there is no "AM or PM?" question: "um sieben" = 07:00.
+        assert de("sieben") == dt(7, 0, 1)
+
+    @pytest.mark.parametrize("text", ["25 Uhr", "7 Uhr 61", "lila Affe", ""])
+    def test_invalid(self, text):
+        with pytest.raises(ParseError):
+            de(text)
+
+
+class TestGermanColloquialClock:
+    @pytest.mark.parametrize("text, expected", [
+        ("halb acht", dt(7, 30, 1)),
+        ("halb sieben", dt(6, 30, 1)),
+        ("halb zwölf", dt(11, 30, 1)),
+        ("halb eins", dt(12, 30, 1)),          # 12:30, not 00:30
+        ("viertel nach sieben", dt(7, 15, 1)),
+        ("viertel vor acht", dt(7, 45, 1)),
+        ("viertel acht", dt(7, 15, 1)),
+        ("dreiviertel acht", dt(7, 45, 1)),
+        ("drei viertel acht", dt(7, 45, 1)),
+        ("fünf nach sieben", dt(7, 5, 1)),
+        ("zehn vor acht", dt(7, 50, 1)),
+        ("zwanzig nach acht", dt(8, 20, 1)),
+        ("fünf vor halb acht", dt(7, 25, 1)),
+        ("fünf nach halb acht", dt(7, 35, 1)),
+        ("zehn nach sieben", dt(7, 10, 1)),
+    ])
+    def test_forms(self, text, expected):
+        assert de(text) == expected
+
+
+class TestGermanDayPeriod:
+    @pytest.mark.parametrize("text, expected", [
+        ("sieben Uhr abends", dt(19, 0)),
+        ("halb acht abends", dt(19, 30)),
+        ("acht Uhr morgens", dt(8, 0, 1)),
+        ("sieben Uhr früh", dt(7, 0, 1)),
+        ("fünf Uhr nachmittags", dt(17, 0)),
+        ("ein Uhr mittags", dt(13, 0, 1)),
+        ("zwölf Uhr mittags", dt(12, 0, 1)),
+        ("zwölf Uhr nachts", dt(0, 0, 1)),
+        ("elf Uhr nachts", dt(23, 0)),
+        ("drei Uhr nachts", dt(3, 0, 1)),
+        ("halb eins mittags", dt(12, 30, 1)),
+        ("Mittag", dt(12, 0, 1)),
+        ("Mittags", dt(12, 0, 1)),
+        ("Mitternacht", dt(0, 0, 1)),
+    ])
+    def test_forms(self, text, expected):
+        assert de(text) == expected
+
+    def test_24h_hours_ignore_period(self):
+        assert de("19 Uhr abends") == dt(19, 0)
+
+
+class TestGermanRelative:
+    @pytest.mark.parametrize("text, minutes", [
+        ("in 30 Minuten", 30),
+        ("30 Minuten", 30),
+        ("in einer Minute", 1),
+        ("in fünf Minuten", 5),
+        ("in einer Stunde", 60),
+        ("in zwei Stunden", 120),
+        ("in 2 Std", 120),
+        ("in 90 Minuten", 90),
+        ("in anderthalb Stunden", 90),
+        ("in einer halben Stunde", 30),
+        ("in einer Viertelstunde", 15),
+        ("in einer dreiviertel Stunde", 45),
+        ("in zweieinhalb Stunden", 150),
+        ("in einer Stunde und 15 Minuten", 75),
+        ("in 1 Stunde 30 Minuten", 90),
+    ])
+    def test_forms(self, text, minutes):
+        assert de(text) == _REF + timedelta(minutes=minutes)
+
+    def test_date_ignored_for_relative(self):
+        assert de("in 30 Minuten", "morgen") == _REF + timedelta(minutes=30)
+
+
+class TestGermanDates:
+    @pytest.mark.parametrize("time_text, date_text, expected", [
+        ("9 Uhr", "heute", dt(9, 0)),
+        ("9 Uhr", "morgen", dt(9, 0, 1)),
+        ("9 Uhr", "übermorgen", dt(9, 0, 2)),
+        ("9 Uhr", "uebermorgen", dt(9, 0, 2)),
+        ("9 Uhr", "Montag", dt(9, 0, 5)),
+        ("9 Uhr", "am Montag", dt(9, 0, 5)),
+        ("9 Uhr", "nächsten Freitag", dt(9, 0, 2)),
+        ("9 Uhr", "Samstag", dt(9, 0, 3)),
+        ("9 Uhr", "Sonnabend", dt(9, 0, 3)),
+        ("9 Uhr", "Mittwoch", dt(9, 0, 7)),       # never today
+        ("8 Uhr", "heute Abend", dt(20, 0)),
+        ("7 Uhr", "morgen früh", dt(7, 0, 1)),
+    ])
+    def test_explicit_date(self, time_text, date_text, expected):
+        assert de(time_text, date_text) == expected
+
+    @pytest.mark.parametrize("text, expected", [
+        ("morgen um 7 Uhr", dt(7, 0, 1)),
+        ("morgen früh um sieben", dt(7, 0, 1)),
+        ("heute Abend um 8", dt(20, 0)),
+        ("heute um 18 Uhr", dt(18, 0)),
+        ("am Montag um halb acht", dt(7, 30, 5)),
+        ("Samstag 10 Uhr", dt(10, 0, 3)),
+        ("übermorgen um 6:45", dt(6, 45, 2)),
+        ("morgen Mittag", dt(12, 0, 1)),
+        ("morgen um 7 Uhr morgens", dt(7, 0, 1)),
+        ("morgen in zwei Stunden", _REF + timedelta(hours=2)),
+    ])
+    def test_date_embedded_in_time_slot(self, text, expected):
+        assert de(text) == expected
+
+    def test_bad_date(self):
+        with pytest.raises(ParseError):
+            de("9 Uhr", "nächste Woche")
+
+    def test_parse_date(self):
+        assert parse_date("morgen", now=_REF, lang="de") == (_REF + timedelta(days=1)).date()
+        assert parse_date("am Montag", now=_REF, lang="de") == dt(0, 0, 5).date()
+        with pytest.raises(ParseError):
+            parse_date("blah", now=_REF, lang="de")
+
+
+class TestLanguageSelection:
+    def test_region_suffix_and_case(self):
+        assert parse_datetime("halb acht", now=_REF, lang="de-DE") == dt(7, 30, 1)
+        assert parse_datetime("halb acht", now=_REF, lang="DE") == dt(7, 30, 1)
+
+    def test_unknown_language_falls_back_to_english(self):
+        assert parse_datetime("7:30 PM", now=_REF, lang="fr") == dt(19, 30)
+
+    def test_default_is_english(self):
+        assert parse_datetime("7:30 PM", now=_REF) == dt(19, 30)
+        with pytest.raises(ParseError):
+            parse_datetime("halb acht", now=_REF)   # German is not guessed
+
+
+class TestParseMinutes:
+    @pytest.mark.parametrize("text, lang, expected", [
+        ("5", "en", 5), ("five", "en", 5), ("ten", "en", 10), ("10 minutes", "en", 10),
+        ("5", "de", 5), ("fünf", "de", 5), ("zehn", "de", 10),
+        ("fünfzehn", "de", 15), ("zwanzig Minuten", "de", 20),
+        ("fünfundzwanzig", "de", 25), ("eine", "de", 1),
+        ("blah", "en", None), ("blah", "de", None), ("", "de", None), (None, "en", None),
+    ])
+    def test_forms(self, text, lang, expected):
+        assert parse_minutes(text, lang) == expected
